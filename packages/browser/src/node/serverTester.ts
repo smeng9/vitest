@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import type { Connect } from 'vite'
+import type { Connect, DevEnvironment } from 'vite'
 import type { ProjectBrowser } from './project'
 import type { ParentBrowserProject } from './projectParent'
 import crypto from 'node:crypto'
@@ -75,11 +75,72 @@ export async function resolveTester(
       __VITEST_FAVICON__: globalServer.faviconUrl,
       __VITEST_INJECTOR__: injector,
     })
-    return html
+    const browserHash = await waitForDepsOptimizer(browserProject.vite.environments.client)
+    return browserHash
+      ? versionImmutableUrls(html, globalServer.immutablePrefixes, browserHash)
+      : html
   } catch (err: any) {
     // don't cache a rejection — the next request should retry the transform
     browserProject.testerHtmlTransformed = undefined
     session.fail(err)
     next(err)
   }
+}
+
+/**
+ * Waits until the dependency optimizer has no scan or re-optimization in
+ * flight and returns the committed `browserHash`.
+ *
+ * `processing` of a discovered dependency resolves only after Vite has
+ * committed the new metadata, so the hash returned here is the one Vite's
+ * import analysis writes into files transformed from now on. Serving a tester
+ * while a re-optimization is still running would hand it the old hash, and
+ * Vite answers those imports with `504 Outdated Optimize Dep`.
+ */
+async function waitForDepsOptimizer(environment: DevEnvironment): Promise<string | undefined> {
+  const optimizer = environment.depsOptimizer
+  if (!optimizer) {
+    return undefined
+  }
+  while (true) {
+    await optimizer.scanProcessing
+    const pending = Object.values(optimizer.metadata.discovered)
+      .map((dep) => dep.processing)
+      .filter((processing) => processing != null)
+    if (!pending.length) {
+      return optimizer.metadata.browserHash
+    }
+    // a failed optimization is reported by Vite, the tester still has to load
+    await Promise.allSettled(pending)
+  }
+}
+
+/**
+ * Adds `?v=<browserHash>` to the tester's script and modulepreload URLs that
+ * are served with `immutable` caching.
+ *
+ * Those files go through Vite's import analysis, which rewrites their imports
+ * of optimized dependencies to `?v=<browserHash>` URLs, so their content
+ * changes when the optimizer re-runs. Without a new URL the browser keeps
+ * using the cached copy that points at the outdated dependencies. Vite gives
+ * relative imports the `v` query of their importer, so versioning the entry
+ * points is enough for the chunks they import.
+ */
+export function versionImmutableUrls(
+  html: string,
+  immutablePrefixes: string[],
+  browserHash: string,
+): string {
+  if (!immutablePrefixes.length) {
+    return html
+  }
+  return html.replace(
+    /(<(?:script|link)\b[^>]*?\s(?:src|href)=")([^"?#]+)(")/g,
+    (match, start: string, url: string, end: string) => {
+      if (!immutablePrefixes.some((prefix) => url.startsWith(prefix))) {
+        return match
+      }
+      return `${start}${url}?v=${browserHash}${end}`
+    },
+  )
 }

@@ -274,10 +274,14 @@ body {
       const persistentContext = (
         parentServer.config.browser.provider?.options as { persistentContext?: unknown } | undefined
       )?.persistentContext
+      // these files are transformed by Vite, so their imports of optimized
+      // dependencies change after a re-optimization; the tester HTML puts the
+      // optimizer's browserHash in their URLs (see `versionImmutableUrls`)
       const immutablePrefixes =
         persistentContext || parentServer.config.browser.provider?.name === 'preview'
           ? []
           : ['/__vitest_browser__/', `/@fs${vitestDist}`, `/@fs${distRoot}`]
+      parentServer.immutablePrefixes = immutablePrefixes
 
       // request interception serves a mocked dependency at the original URL,
       // so a cached original would never reach the mock; import map mocks

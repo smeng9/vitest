@@ -39,6 +39,10 @@ export class ParentBrowserProject {
   public stateJs: Promise<string> | string
 
   public initScripts: string[] = []
+  /**
+   * URL prefixes served with `Cache-Control: immutable`
+   */
+  public immutablePrefixes: string[] = []
 
   public commands: Record<string, BrowserCommand<any>> = {}
   public children: Set<ProjectBrowser> = new Set()

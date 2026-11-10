@@ -12,10 +12,16 @@ function recordDependencyResponses() {
     configureServer(server) {
       server.middlewares.use((req, res, next) => {
         res.on('finish', () => {
-          if (!req.url || !versionedRequestRegexp.test(req.url)) {
+          const depsOptimizer = server.environments.client.depsOptimizer
+          // the tester's own files carry `?v=` too, but they are not optimized dependencies
+          if (
+            !req.url ||
+            !versionedRequestRegexp.test(req.url) ||
+            !depsOptimizer?.isOptimizedDepUrl(req.url)
+          ) {
             return
           }
-          const chunks = server.environments.client.depsOptimizer?.metadata.chunks ?? {}
+          const chunks = depsOptimizer.metadata.chunks ?? {}
           const chunkFiles = new Set(Object.values(chunks).map((chunk) => basename(chunk.file)))
           const file = basename(new URL(req.url, 'http://localhost').pathname)
           responses.push({
