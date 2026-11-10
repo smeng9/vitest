@@ -32,6 +32,7 @@ import {
 } from 'vitest/node'
 import { version } from '../../package.json'
 import { distRoot } from './constants'
+import { createHtmlResponseWarningMiddleware } from './middlewares/htmlResponseWarning'
 import { createOrchestratorMiddleware } from './middlewares/orchestratorMiddleware'
 import { createTesterMiddleware } from './middlewares/testerMiddleware'
 import BrowserPlugin from './plugin'
@@ -234,6 +235,7 @@ body {
         }
         next()
       })
+      server.middlewares.use(createHtmlResponseWarningMiddleware(parentServer))
       server.middlewares.use(createOrchestratorMiddleware(parentServer))
       server.middlewares.use(createTesterMiddleware(parentServer))
 

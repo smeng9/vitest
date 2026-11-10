@@ -89,7 +89,8 @@ export function BrowserLoaderPlugin(
                       `\n${c.bold('[vitest]')} Vite unexpectedly reloaded a test. This may cause tests to fail, lead to flaky behaviour or duplicated test runs.\n`,
                     ),
                     c.yellow(
-                      `For a stable experience, add the newly optimized dependencies to your config's ${c.bold('`optimizeDeps.include`')} field manually.\n`,
+                      `For a stable experience, add the newly optimized dependencies to your config's ${c.bold('`optimizeDeps.include`')} field manually. ` +
+                        `If no test imports them, a test probably requested an HTML page (often through the SPA fallback for an unmocked request), and its scripts import them: mock that request, or add the page to ${c.bold('`optimizeDeps.entries`')}.\n`,
                     ),
                   ].join(''),
                 )
