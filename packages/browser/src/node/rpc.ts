@@ -416,6 +416,9 @@ export function setupBrowserRpc(
           }
           return result?.map
         },
+        getDepsOptimizerHash() {
+          return vite.environments.client.depsOptimizer?.metadata.browserHash ?? null
+        },
         cancelCurrentRun(reason) {
           vitest.cancelCurrentRun(reason)
         },

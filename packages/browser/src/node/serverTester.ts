@@ -46,6 +46,8 @@ export async function resolveTester(
       ? globalServer.injectorJs
       : await globalServer.injectorJs
 
+  const browserHash = await waitForDepsOptimizer(browserProject.vite.environments.client)
+
   const injector = replacer(injectorJs, {
     __VITEST_PROVIDER__: JSON.stringify(browserProject.config.browser.provider?.name || 'preview'),
     __VITEST_CONFIG__: JSON.stringify(browserProject.wrapSerializedConfig()),
@@ -59,6 +61,7 @@ export async function resolveTester(
     __VITEST_TESTER_ID__: JSON.stringify(crypto.randomUUID()),
     __VITEST_PROVIDED_CONTEXT__: '{}',
     __VITEST_API_TOKEN__: JSON.stringify(globalServer.vitest.config.api.token),
+    __VITEST_DEPS_HASH__: JSON.stringify(browserHash ?? null),
   })
 
   try {
@@ -75,7 +78,6 @@ export async function resolveTester(
       __VITEST_FAVICON__: globalServer.faviconUrl,
       __VITEST_INJECTOR__: injector,
     })
-    const browserHash = await waitForDepsOptimizer(browserProject.vite.environments.client)
     return browserHash
       ? versionImmutableUrls(html, globalServer.immutablePrefixes, browserHash)
       : html

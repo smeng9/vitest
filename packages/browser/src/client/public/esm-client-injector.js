@@ -38,8 +38,24 @@
     provider: { __VITEST_PROVIDER__ },
     method: { __VITEST_METHOD__ },
     providedContext: { __VITEST_PROVIDED_CONTEXT__ },
+    depsHash: { __VITEST_DEPS_HASH__ },
   };
   window.VITEST_API_TOKEN = { __VITEST_API_TOKEN__ };
+
+  // A module script that fails to load (for example a `504 Outdated Optimize Dep`
+  // after Vite re-optimized dependencies) never runs, so the tester would never
+  // report "ready". This script runs before the module scripts, so it can tell
+  // the orchestrator, which recreates the tester or fails the file right away.
+  if (__vitest_browser_runner__.type === 'tester' && window.self !== window.top) {
+    const channel = new BroadcastChannel(`vitest:${__vitest_browser_runner__.sessionId}`);
+    const iframeId = new URL(location.href).searchParams.get('iframeId');
+    window.addEventListener('error', (event) => {
+      const target = event.target;
+      if (target instanceof HTMLScriptElement && target.type === 'module') {
+        channel.postMessage({ event: 'load-error', iframeId, href: location.href, url: target.src });
+      }
+    }, true);
+  }
 
   const config = __vitest_browser_runner__.config;
 

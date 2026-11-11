@@ -3,6 +3,7 @@ import type {
   GlobalChannelIncomingEvent,
   IframeChannelEvent,
   IframeChannelOutgoingEvent,
+  IframeLoadErrorEvent,
   IframeReceivedEvent,
   IframeViewportDoneEvent,
   IframeViewportFailEvent,
@@ -20,6 +21,17 @@ import { getBrowserState, getConfig, supportsLateImportMaps } from './utils'
 const ID_ALL = '__vitest_all__'
 // the next document gets this long to fire "load" before the unload counts as a broken iframe
 const IFRAME_UNLOAD_TIMEOUT = 5_000
+// how many testers a file may use when Vite keeps re-optimizing dependencies
+const MAX_TESTER_ATTEMPTS = 3
+
+/**
+ * The tester can no longer run its file because Vite re-optimized
+ * dependencies after the tester HTML was served. A new tester gets the new
+ * dependencies, so the file can run again.
+ */
+class StaleTesterError extends Error {
+  name = 'StaleTesterError'
+}
 
 export class IframeOrchestrator {
   private cancelled = false
@@ -27,6 +39,9 @@ export class IframeOrchestrator {
   private iframes = new Map<string, HTMLIFrameElement>()
   private readyIframes = new Set<string>()
   private readyWaiters = new Map<string, { resolve: () => void; reject: (error: Error) => void }>()
+  // the iframe created for an id, before it is added to `iframes` on "load"
+  private createdIframes = new Map<string, HTMLIFrameElement>()
+  private testerFailures = new Map<string, Error>()
   private messageId = 0
 
   public eventTarget: EventTarget = new EventTarget()
@@ -214,22 +229,37 @@ export class IframeOrchestrator {
 
     const file = spec.filepath
 
-    if (this.iframes.has(file)) {
+    for (let attempt = 1; ; attempt++) {
       this.removeIframe(file)
-    }
 
-    await this.prepareIframe(container, file, startTime, otelContext)
-    await setIframeViewport(width, height)
-    // running tests after the "prepare" event
-    await this.sendEventToIframe({
-      event: 'execute',
-      files: [spec],
-      method: options.method,
-      iframeId: file,
-      context: options.providedContext,
-      concurrencyId: options.concurrencyId,
-      workerId: options.workerId,
-    })
+      try {
+        await this.prepareIframe(container, file, startTime, otelContext, attempt)
+        await setIframeViewport(width, height)
+        // running tests after the "prepare" event
+        await this.sendEventToIframe({
+          event: 'execute',
+          files: [spec],
+          method: options.method,
+          iframeId: file,
+          context: options.providedContext,
+          concurrencyId: options.concurrencyId,
+          workerId: options.workerId,
+        })
+        break
+      } catch (error) {
+        if (!(error instanceof StaleTesterError) || this.cancelled) {
+          throw error
+        }
+        if (attempt >= MAX_TESTER_ATTEMPTS) {
+          throw new Error(
+            `${error.message} The file was started in ${attempt} new testers, and Vite re-optimized dependencies each time. ` +
+              'Add the dependencies that Vite reported to `optimizeDeps.include`, ' +
+              'or add the HTML page that imports them to `optimizeDeps.entries`.',
+          )
+        }
+        debug('recreating the tester', file, error.message)
+      }
+    }
     // perform "cleanup" to cleanup resources and calculate the coverage
     await this.sendEventToIframe({
       event: 'cleanup',
@@ -248,8 +278,10 @@ export class IframeOrchestrator {
     iframeId: string,
     startTime: number,
     otelContext: OTELContext,
+    attempt = 1,
   ) {
-    const iframe = this.createTestIframe(iframeId)
+    const iframe = this.createTestIframe(iframeId, attempt)
+    this.createdIframes.set(iframeId, iframe)
     container.appendChild(iframe)
 
     await new Promise<void>((resolve, reject) => {
@@ -281,7 +313,9 @@ export class IframeOrchestrator {
                 otelCarrier: this.traces.getContextCarrier(otelContext),
               }),
             )
-            .then(resolve, (error) => reject(this.dispatchIframeError(error)))
+            .then(resolve, (error) =>
+              reject(error instanceof StaleTesterError ? error : this.dispatchIframeError(error)),
+            )
         }
       }
       iframe.onerror = (e) => {
@@ -311,6 +345,10 @@ export class IframeOrchestrator {
     if (this.readyIframes.has(iframeId)) {
       return Promise.resolve()
     }
+    const failure = this.testerFailures.get(iframeId)
+    if (failure) {
+      return Promise.reject(failure)
+    }
 
     return new Promise<void>((resolve, reject) => {
       const timeout = getIframeTimeout()
@@ -339,10 +377,55 @@ export class IframeOrchestrator {
     })
   }
 
+  /**
+   * Stops waiting for a tester that cannot run its file. `href` tells which
+   * tester sent the message, so a message from a tester that was already
+   * replaced does not fail the new one.
+   */
+  private failTester(iframeId: string, href: string, error: Error) {
+    if (this.createdIframes.get(iframeId)?.src !== href) {
+      return
+    }
+    this.testerFailures.set(iframeId, error)
+    const waiter = this.readyWaiters.get(iframeId)
+    if (waiter) {
+      this.readyWaiters.delete(iframeId)
+      waiter.reject(error)
+    }
+    this.eventTarget.dispatchEvent(
+      new CustomEvent('testerfailure', { detail: { iframeId, error } }),
+    )
+  }
+
+  private async onTesterLoadError({ iframeId, href, url }: IframeLoadErrorEvent) {
+    const iframe = this.createdIframes.get(iframeId)
+    if (iframe?.src !== href) {
+      return
+    }
+    let testerHash: string | null | undefined
+    try {
+      testerHash = (iframe.contentWindow as any)?.__vitest_browser_runner__?.depsHash
+    } catch {}
+    const currentHash = await client.rpc.getDepsOptimizerHash().catch(() => null)
+    debug('tester failed to load', iframeId, url, testerHash, currentHash)
+    const error =
+      testerHash && currentHash && testerHash !== currentHash
+        ? new StaleTesterError(
+            `The tester for "${iframeId}" failed to load ${url} because Vite re-optimized dependencies after the tester started.`,
+          )
+        : new Error(
+            `The tester for "${iframeId}" failed to load ${url}. Check the browser console and the server output for the failed request.`,
+          )
+    this.failTester(iframeId, href, error)
+  }
+
   private removeIframe(iframeId: string) {
     const iframe = this.iframes.get(iframeId)
     this.iframes.delete(iframeId)
     this.readyIframes.delete(iframeId)
+    this.testerFailures.delete(iframeId)
+    this.createdIframes.get(iframeId)?.remove()
+    this.createdIframes.delete(iframeId)
     const waiter = this.readyWaiters.get(iframeId)
     if (waiter) {
       this.readyWaiters.delete(iframeId)
@@ -429,9 +512,11 @@ export class IframeOrchestrator {
     }
   }
 
-  private createTestIframe(iframeId: string) {
+  private createTestIframe(iframeId: string, attempt: number) {
     const iframe = document.createElement('iframe')
-    const src = `/?sessionId=${getBrowserState().sessionId}&iframeId=${encodeURIComponent(iframeId)}`
+    // a new URL per attempt tells the messages of a replaced tester apart
+    const attemptQuery = attempt > 1 ? `&attempt=${attempt}` : ''
+    const src = `/?sessionId=${getBrowserState().sessionId}&iframeId=${encodeURIComponent(iframeId)}${attemptQuery}`
     const config = getConfig()
 
     iframe.setAttribute('loading', 'eager')
@@ -490,6 +575,20 @@ export class IframeOrchestrator {
     switch (e.data.event) {
       case 'ready': {
         this.markReady(e.data.iframeId)
+        break
+      }
+      case 'load-error': {
+        await this.onTesterLoadError(e.data)
+        break
+      }
+      case 'stale': {
+        this.failTester(
+          e.data.iframeId,
+          e.data.href,
+          new StaleTesterError(
+            `Vite re-optimized dependencies while the test file "${e.data.iframeId}" was loading.`,
+          ),
+        )
         break
       }
       case 'viewport': {
@@ -572,6 +671,7 @@ export class IframeOrchestrator {
         clearTimeout(ackTimer)
         channel.removeEventListener('message', onReceived)
         this.eventTarget.removeEventListener('iframeerror', onError)
+        this.eventTarget.removeEventListener('testerfailure', onTesterFailure)
         events!.delete(event.event)
       }
 
@@ -615,7 +715,16 @@ export class IframeOrchestrator {
         reject((e as CustomEvent).detail)
       }
 
+      function onTesterFailure(e: Event) {
+        const { iframeId, error } = (e as CustomEvent<{ iframeId: string; error: Error }>).detail
+        if (iframeId === event.iframeId) {
+          cleanupEvents()
+          reject(error)
+        }
+      }
+
       this.eventTarget.addEventListener('iframeerror', onError)
+      this.eventTarget.addEventListener('testerfailure', onTesterFailure)
       channel.addEventListener('message', onReceived)
     })
   }

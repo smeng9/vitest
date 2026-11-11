@@ -72,6 +72,7 @@ export interface WebSocketBrowserHandlers {
   ) => Promise<ServerMockResolution>
   invalidate: (ids: string[]) => void
   getBrowserFileSourceMap: (id: string) => SourceMap | null | { mappings: '' } | undefined
+  getDepsOptimizerHash: () => string | null
   wdioSwitchContext: (direction: 'iframe' | 'parent') => void
 
   registerMock: (

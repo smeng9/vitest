@@ -101,6 +101,11 @@ export interface BrowserRunnerState {
   }
   providedContext: string
   type: 'tester' | 'orchestrator'
+  /**
+   * The optimizer's `browserHash` when the tester HTML was served.
+   * The tester's runtime imports optimized dependencies with this hash.
+   */
+  depsHash: string | null
   disposeExceptionTracker: () => void
   wrapModule: <T>(module: () => T) => T
   iframeId?: string

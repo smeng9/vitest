@@ -16,7 +16,7 @@ import type {
 } from 'vitest'
 import type { VitestBrowserClientMocker } from './mocker'
 import type { CommandsManager } from './tester-utils'
-import { globalChannel, onCancel } from '@vitest/browser/client'
+import { channel, globalChannel, onCancel } from '@vitest/browser/client'
 import { basename, resolve } from 'pathe'
 import { recordArtifact, TestRunner } from 'vitest'
 import { page, userEvent } from 'vitest/browser'
@@ -351,10 +351,17 @@ function createBrowserRunner(
       }
       // static imports don't wait for mocks queued by a setup file
       await mocker.prepare()
+      let importError: unknown
       try {
         await import(/* @vite-ignore */ importpath)
       } catch (err) {
-        throw new Error(`Failed to import test file ${filepath}`, { cause: err })
+        importError = err
+      }
+      if (mode === 'collect') {
+        await abortIfDepsChanged(filepath)
+      }
+      if (importError) {
+        throw new Error(`Failed to import test file ${filepath}`, { cause: importError })
       }
 
       if (mode === 'collect' && !this.sourceMapPrefetches.has(filepath)) {
@@ -375,6 +382,41 @@ function createBrowserRunner(
       return this._otel.$(`vitest.test.runner.${name}`, options, cb || (attributes as () => T))
     }
   }
+}
+
+/**
+ * Vite rewrites imports of optimized dependencies to `?v=<browserHash>` URLs
+ * when it transforms a module. If the optimizer committed a new hash while the
+ * test file was loading, the file was transformed with the new hash and loaded
+ * a second copy of Vitest, which has no collector, so its tests would be lost
+ * ("Vitest failed to find the current suite").
+ *
+ * In isolated mode, the tester stops here without reporting anything and asks
+ * the orchestrator to run the file again in a new tester, which loads the new
+ * dependencies. A non-isolated tester runs other files too and cannot be
+ * replaced, so the file fails with an explanation instead.
+ */
+async function abortIfDepsChanged(filepath: string): Promise<void> {
+  const state = getBrowserState()
+  const testerHash = state.depsHash
+  if (!testerHash) {
+    return
+  }
+  const currentHash = await rpc().getDepsOptimizerHash()
+  if (currentHash == null || currentHash === testerHash) {
+    return
+  }
+  if (state.config.isolate === false) {
+    throw new Error(
+      `Vite re-optimized dependencies while ${filepath} was loading, ` +
+        `so the file was loaded with different copies of the optimized dependencies than the tester. ` +
+        'Add the dependencies that Vite reported to `optimizeDeps.include`, ' +
+        'or add the HTML page that imports them to `optimizeDeps.entries`.',
+    )
+  }
+  channel.postMessage({ event: 'stale', iframeId: state.iframeId!, href: location.href })
+  // the orchestrator removes this iframe and runs the file in a new one
+  return new Promise<never>(() => {})
 }
 
 let cachedRunner: BrowserVitestRunner | null = null

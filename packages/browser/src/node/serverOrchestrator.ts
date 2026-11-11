@@ -40,6 +40,7 @@ export async function resolveOrchestrator(
       stringify(browserProject.project.getProvidedContext()),
     ),
     __VITEST_API_TOKEN__: JSON.stringify(globalServer.vitest.config.api.token),
+    __VITEST_DEPS_HASH__: 'null',
   })
 
   // disable CSP for the orchestrator as we are the ones controlling it

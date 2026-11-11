@@ -26,6 +26,26 @@ export interface IframeReadyEvent {
   iframeId: string
 }
 
+/**
+ * Posted by the tester when one of its module scripts fails to load.
+ */
+export interface IframeLoadErrorEvent {
+  event: 'load-error'
+  iframeId: string
+  href: string
+  url: string
+}
+
+/**
+ * Posted by the tester when Vite re-optimized dependencies while the test file
+ * was loading, so the file may run against a second copy of Vitest.
+ */
+export interface IframeStaleEvent {
+  event: 'stale'
+  iframeId: string
+  href: string
+}
+
 export interface GlobalChannelTestRunCanceledEvent {
   type: 'cancel'
   reason: CancelReason
@@ -55,7 +75,11 @@ export interface IframePrepareEvent {
 
 export type GlobalChannelIncomingEvent = GlobalChannelTestRunCanceledEvent
 
-export type IframeChannelIncomingEvent = IframeViewportEvent | IframeReadyEvent
+export type IframeChannelIncomingEvent =
+  | IframeViewportEvent
+  | IframeReadyEvent
+  | IframeLoadErrorEvent
+  | IframeStaleEvent
 
 export type IframeChannelOutgoingEvent =
   | IframeExecuteEvent
