@@ -294,7 +294,13 @@ body {
       server.middlewares.use((req, res, next) => {
         const url = req.url
         if (url) {
-          if (immutablePrefixes.some((prefix) => url.startsWith(prefix))) {
+          // only a versioned URL changes when a re-optimization changes the
+          // content, e.g. a dist file imported by an absolute path has no `v`
+          // query and must be revalidated
+          if (
+            versionRegexp.test(url) &&
+            immutablePrefixes.some((prefix) => url.startsWith(prefix))
+          ) {
             pinCacheControl(res, 'public,max-age=31536000,immutable')
           }
           // 9000 mega head move
